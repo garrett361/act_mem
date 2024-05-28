@@ -1,6 +1,6 @@
 import gc
-from typing import Any, Iterable, Optional, Set, Union
 from types import ModuleType
+from typing import Any, Iterable, Optional, Union
 
 import torch
 
@@ -64,16 +64,14 @@ class AllocatedMemContext:
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         exit_dict = self._get_allocation_dict()
-        delta_dict = {
-            k + "_delta": v - self._enter_dict[k] for k, v in exit_dict.items()
-        }
+        delta_dict = {k + "_delta": v - self._enter_dict[k] for k, v in exit_dict.items()}
         self.mem_dict = {**delta_dict, **exit_dict}
 
 
 class SavedBwdCaptureContext:
     """
     Context manager which captures all tensors which are registered as being saved for backwards
-    within the context window. Mostly intended for tracking activations.
+    within the context window. Does not work with `meta`-device tensors.
 
     All saved tensors are stored in the `saved_tensor_dict` attr, which is an instance of torch's
     WeakTensorKeyDictionary with tensor/data_ptr key/value pairs. The GiB in memory of all saved
@@ -94,24 +92,27 @@ class SavedBwdCaptureContext:
         self,
         ignored_tensors: Optional[Iterable[torch.Tensor]] = None,
     ) -> None:
-        self._ignored_data_ptr_set: Set[int] = {
-            p.untyped_storage().data_ptr() for p in (ignored_tensors or tuple())
-        }
+        # Track ignored tensors by their data_ptr.
+        self._ignored_data_ptrs = (
+            set()
+            if ignored_tensors is None
+            else {t.untyped_storage().data_ptr() for t in ignored_tensors}
+        )
 
+        # Use WeakTensorKeyDictionary instances to save non-trivial tensor references, since these
+        # won't keep the tensor alive if the only references to the tensor are within this object.
         self.saved_tensor_dict = torch.utils.weak.WeakTensorKeyDictionary()
 
         def pack_hook(saved_tensor: torch.Tensor) -> torch.Tensor:
             data_ptr = saved_tensor.untyped_storage().data_ptr()
-            if saved_tensor.is_meta or data_ptr not in self._ignored_data_ptr_set:
+            if data_ptr not in self._ignored_data_ptrs:
                 self.saved_tensor_dict[saved_tensor] = data_ptr
             return saved_tensor
 
         def unpack_hook(saved_tensor: torch.Tensor) -> torch.Tensor:
             return saved_tensor
 
-        self._saved_tensors_hook = torch.autograd.graph.saved_tensors_hooks(
-            pack_hook, unpack_hook
-        )
+        self._saved_tensors_hook = torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook)
 
     def __enter__(self) -> "SavedBwdCaptureContext":
         self._saved_tensors_hook.__enter__()
@@ -122,12 +123,14 @@ class SavedBwdCaptureContext:
 
     @property
     def saved_tensor_mem(self) -> int:
-        # Avoid double counting of any memory. Can do this by comparing pointers when the tensor
-        # device isn't meta. When the device is meta, the data_ptr is always zero, though, so
-        seen_storage: Set[int] = set()
+        # Try to avoid double counting memory (as in the case of multiple views into the same
+        # tensor) by using data_ptrs.
+
+        seen_data_ptrs: set[int] = set()
+
         total_bytes = 0
         for tensor, data_ptr in self.saved_tensor_dict.items():
-            if tensor.is_meta or data_ptr not in seen_storage:
-                seen_storage.add(data_ptr)
+            if data_ptr not in seen_data_ptrs:
+                seen_data_ptrs.add(data_ptr)
                 total_bytes += tensor.untyped_storage().nbytes()
         return total_bytes
