@@ -65,3 +65,34 @@ class TestSavedBwdCaptureContext:
 
         expected_mem = first_lin_input_mem + second_lin_input_mem + activation_input_mem
         assert saved.saved_tensor_mem == expected_mem
+
+    @pytest.mark.parametrize("act_fn_cls", [nn.ReLU, nn.GELU, nn.Sigmoid, nn.Tanh, nn.SiLU])
+    def test_mlp_amp(self, act_fn_cls) -> None:
+        """
+        Similar story with AMP:
+        """
+        inputs = torch.randn(1, DIM, requires_grad=True)
+        expansion_factor = 4
+        mlp = nn.Sequential(
+            nn.Linear(DIM, expansion_factor * DIM),
+            act_fn_cls(),
+            nn.Linear(expansion_factor * DIM, DIM),
+        )
+        dtype = torch.bfloat16
+        with torch.autocast(device_type="cpu", dtype=dtype):
+            with act_mem.SavedBwdCaptureContext(ignored_tensors=mlp.parameters()) as saved:
+                _ = mlp(inputs)
+
+        # Compare measured memory against expected
+        amp_weight_mem = 2 * expansion_factor * DIM**2 * dtype.itemsize
+        first_lin_input_mem = inputs.numel() * dtype.itemsize
+        second_lin_input_mem = expansion_factor * inputs.numel() * dtype.itemsize
+        # Only GeLU should cost additional activation memory
+        activation_input_mem = (
+            0 if act_fn_cls in (nn.ReLU, nn.Tanh, nn.Sigmoid) else second_lin_input_mem
+        )
+
+        expected_mem = (
+            amp_weight_mem + first_lin_input_mem + second_lin_input_mem + activation_input_mem
+        )
+        assert saved.saved_tensor_mem == expected_mem
