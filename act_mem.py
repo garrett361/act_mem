@@ -42,8 +42,7 @@ class AllocatedMemContext:
     ```
     """
 
-    def __init__(self, enabled: bool = True, accel: ModuleType = torch.cuda) -> None:
-        self.enabled = enabled
+    def __init__(self, accel: ModuleType = torch.cuda) -> None:
         self.accel = accel
         self._enter_dict: dict[str, int] = {}
         self.mem_dict: dict[str, int] = {}
@@ -60,17 +59,15 @@ class AllocatedMemContext:
         }
 
     def __enter__(self) -> "AllocatedMemContext":
-        if self.enabled:
-            self._enter_dict = self._get_allocation_dict()
+        self._enter_dict = self._get_allocation_dict()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        if self.enabled:
-            exit_dict = self._get_allocation_dict()
-            delta_dict = {
-                k + "_delta": v - self._enter_dict[k] for k, v in exit_dict.items()
-            }
-            self.mem_dict = {**delta_dict, **exit_dict}
+        exit_dict = self._get_allocation_dict()
+        delta_dict = {
+            k + "_delta": v - self._enter_dict[k] for k, v in exit_dict.items()
+        }
+        self.mem_dict = {**delta_dict, **exit_dict}
 
 
 class SavedBwdCaptureContext:
@@ -95,21 +92,17 @@ class SavedBwdCaptureContext:
 
     def __init__(
         self,
-        enabled: bool = True,
         ignored_tensors: Optional[Iterable[torch.Tensor]] = None,
     ) -> None:
-        self.enabled = enabled
-        self.ignored_tensors = ignored_tensors or tuple()
-
         self._ignored_data_ptr_set: Set[int] = {
-            p.untyped_storage().data_ptr() for p in self.ignored_tensors
+            p.untyped_storage().data_ptr() for p in (ignored_tensors or tuple())
         }
 
         self.saved_tensor_dict = torch.utils.weak.WeakTensorKeyDictionary()
 
         def pack_hook(saved_tensor: torch.Tensor) -> torch.Tensor:
             data_ptr = saved_tensor.untyped_storage().data_ptr()
-            if data_ptr not in self._ignored_data_ptr_set:
+            if saved_tensor.is_meta or data_ptr not in self._ignored_data_ptr_set:
                 self.saved_tensor_dict[saved_tensor] = data_ptr
             return saved_tensor
 
@@ -121,21 +114,20 @@ class SavedBwdCaptureContext:
         )
 
     def __enter__(self) -> "SavedBwdCaptureContext":
-        if self.enabled:
-            self._saved_tensors_hook.__enter__()
+        self._saved_tensors_hook.__enter__()
         return self
 
     def __exit__(self, *args: Any, **kwargs: Any) -> None:
-        if self.enabled:
-            self._saved_tensors_hook.__exit__(*args, **kwargs)
+        self._saved_tensors_hook.__exit__(*args, **kwargs)
 
     @property
     def saved_tensor_mem(self) -> int:
-        # Avoid double counting of any memory.
+        # Avoid double counting of any memory. Can do this by comparing pointers when the tensor
+        # device isn't meta. When the device is meta, the data_ptr is always zero, though, so
         seen_storage: Set[int] = set()
         total_bytes = 0
         for tensor, data_ptr in self.saved_tensor_dict.items():
-            if data_ptr not in seen_storage:
+            if tensor.is_meta or data_ptr not in seen_storage:
                 seen_storage.add(data_ptr)
                 total_bytes += tensor.untyped_storage().nbytes()
         return total_bytes
