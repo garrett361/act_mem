@@ -5,13 +5,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-ACT_FN_DICT = {
-    "relu": nn.ReLU,
-    "gelu": nn.GELU,
-    "tanh": nn.Tanh,
-    "silu": nn.SiLU,
-}
-
 
 class Attention(nn.Module):
     """
@@ -91,14 +84,14 @@ class MLP(nn.Module):
     def __init__(
         self,
         d_model: int,
-        activation: str = "relu",
+        act_fn: nn.Module,
         dropout_prob: Optional[float] = None,
         device: Optional[Union[str, torch.device]] = None,
         dtype: Optional[torch.dtype] = None,
     ) -> None:
         super().__init__()
         self.d_model = d_model
-        self.act_fn = ACT_FN_DICT[activation]()
+        self.act_fn = act_fn
         self.dropout_prob = dropout_prob
         factory_kwargs = {"device": device, "dtype": dtype}
 
@@ -144,17 +137,15 @@ class Block(nn.Module):
         self,
         d_model: int,
         n_heads: int,
+        act_fn: nn.Module,
         dropout_prob: Optional[float] = None,
-        activation: str = "relu",
         dtype: Optional[torch.dtype] = None,
         device: Optional[Union[str, torch.device]] = None,
     ):
         super().__init__()
         factory_kwargs = {"device": device, "dtype": dtype}
         self.attn = Attention(d_model=d_model, n_heads=n_heads, **factory_kwargs)
-        self.mlp = MLP(
-            d_model=d_model, activation=activation, dropout_prob=dropout_prob, **factory_kwargs
-        )
+        self.mlp = MLP(d_model=d_model, act_fn=act_fn, dropout_prob=dropout_prob, **factory_kwargs)
         self.norm_0 = nn.LayerNorm(d_model, **factory_kwargs)
         self.norm_1 = nn.LayerNorm(d_model, **factory_kwargs)
 

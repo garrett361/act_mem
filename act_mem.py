@@ -1,8 +1,11 @@
 import gc
-from types import ModuleType
 from typing import Any, Iterable, Optional, Union
 
 import torch
+
+
+def B_to_GiB(bytes: Union[int, float]) -> float:
+    return bytes / 2**30
 
 
 def get_tensor_bytes(tensor: torch.Tensor) -> int:
@@ -12,10 +15,6 @@ def get_tensor_bytes(tensor: torch.Tensor) -> int:
     """
     tensor_bytes = tensor.numel() * tensor.element_size()
     return tensor_bytes
-
-
-def B_to_GiB(bytes: Union[int, float]) -> float:
-    return bytes / 2**30
 
 
 def get_tensor_GiB(tensor: torch.Tensor) -> float:
@@ -29,7 +28,7 @@ def get_tensor_GiB(tensor: torch.Tensor) -> float:
 
 class AllocatedMemContext:
     """
-    Context manager which computes the allocated GPU memory at context exit and the change between
+    Context manager which captures the allocated GPU memory at context exit and the change between
     enter and exit.
 
     Only includes `allocated_bytes.all.`-prefixed keys in `memory_stats` with all readings converted
@@ -42,31 +41,30 @@ class AllocatedMemContext:
     ```
     """
 
-    def __init__(self, accel: ModuleType = torch.cuda) -> None:
-        self.accel = accel
-        self._enter_dict: dict[str, int] = {}
-        self.mem_dict: dict[str, int] = {}
+    def __init__(self) -> None:
+        self.before: dict[str, int] = {}
+        self.after: dict[str, int] = {}
+        self.delta: dict[str, int] = {}
 
-    def _get_allocation_dict(self) -> dict[str, int]:
-        """Gets the memory allocation stats and does some cleanup."""
-        self.accel.synchronize()
+    def _get_mem_dict(self) -> dict[str, int]:
+        # Gets the memory allocation stats and does some cleanup.
+        torch.cuda.synchronize()
         gc.collect()
         torch.cuda.empty_cache()
         key_prefix = "allocated_bytes.all."
         return {
             k.replace(key_prefix, ""): v
-            for k, v in self.accel.memory_stats().items()
+            for k, v in torch.cuda.memory_stats().items()
             if key_prefix in k
         }
 
     def __enter__(self) -> "AllocatedMemContext":
-        self._enter_dict = self._get_allocation_dict()
+        self.before = self._get_mem_dict()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        exit_dict = self._get_allocation_dict()
-        delta_dict = {k + "_delta": v - self._enter_dict[k] for k, v in exit_dict.items()}
-        self.mem_dict = {**delta_dict, **exit_dict}
+        self.after = self._get_mem_dict()
+        self.delta = {k: v - self.before[k] for k, v in self.after.items()}
 
 
 class SavedBwdCaptureContext:
@@ -75,18 +73,18 @@ class SavedBwdCaptureContext:
     within the context window. Does not work with `meta`-device tensors.
 
     All saved tensors are stored in the `saved_tensor_dict` attr, which is an instance of torch's
-    WeakTensorKeyDictionary with tensor/data_ptr key/value pairs. The GiB in memory of all saved
-    tensors with unique storage can be accessed through `saved_tensor_GiB`.
+    WeakTensorKeyDictionary with tensor/data_ptr key/value pairs. The memory in bytes of all saved
+    tensors with unique storage can be accessed through `saved_tensor_mem`.
 
     Use:
     ```
     model = ...
-    with SavedBwdCaptureContext(ignored_tensors=model.parameters()) as bwd_capture:
+    with SavedBwdCaptureContext(ignored_tensors=model.parameters()) as saved:
         # Do some computation with `model` and capture saved tensors which are not model weights
 
     ```
-    bwd_capture.saved_tensor_dict # WeakTensorKeyDictionary of all saved tensors.
-    bwd_capture.saved_tensor_GiB # GiB from all saved tensors (activation memory).
+    saved.saved_tensor_dict # WeakTensorKeyDictionary of all saved tensors.
+    saved.saved_tensor_mem # bytes from all saved tensors (activation memory).
     """
 
     def __init__(
@@ -108,6 +106,9 @@ class SavedBwdCaptureContext:
             data_ptr = saved_tensor.untyped_storage().data_ptr()
             if data_ptr not in self._ignored_data_ptrs:
                 self.saved_tensor_dict[saved_tensor] = data_ptr
+                # Also add this data_ptr to the _ignored_data_ptrs set to avoid adding views tensors
+                # we have already accounted for
+                self._ignored_data_ptrs.add(data_ptr)
             return saved_tensor
 
         def unpack_hook(saved_tensor: torch.Tensor) -> torch.Tensor:
@@ -124,14 +125,5 @@ class SavedBwdCaptureContext:
 
     @property
     def saved_tensor_mem(self) -> int:
-        # Try to avoid double counting memory (as in the case of multiple views into the same
-        # tensor) by using data_ptrs.
-
-        seen_data_ptrs: set[int] = set()
-
-        total_bytes = 0
-        for tensor, data_ptr in self.saved_tensor_dict.items():
-            if data_ptr not in seen_data_ptrs:
-                seen_data_ptrs.add(data_ptr)
-                total_bytes += tensor.untyped_storage().nbytes()
+        total_bytes = sum(t.untyped_storage().nbytes() for t in self.saved_tensor_dict)
         return total_bytes
