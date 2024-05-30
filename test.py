@@ -3,9 +3,28 @@ import torch
 import torch.nn as nn
 
 import act_mem
+import layers
 
-DIM = 8
-ZERO_MEM_ACTIVATIONS = (nn.ReLU, nn.Sigmoid, nn.Tanh)
+DIM = 128
+SEQ_LEN = 64
+N_HEADS = 4
+BATCH_SIZE = 2
+
+ACT_FNS = (
+    nn.ELU,
+    nn.GELU,
+    nn.Hardshrink,
+    nn.Hardsigmoid,
+    nn.Hardswish,
+    nn.Hardtanh,
+    nn.LeakyReLU,
+    nn.ReLU,
+    nn.SELU,
+    nn.SiLU,
+    nn.Sigmoid,
+    nn.Tanh,
+)
+ZERO_MEM_ACT_FNS = (nn.ReLU, nn.Sigmoid, nn.Tanh, nn.LeakyReLU, nn.RReLU)
 
 
 class TestSavedBwdCaptureContext:
@@ -35,7 +54,7 @@ class TestSavedBwdCaptureContext:
             == out.numel() * out.element_size() + lin.weight.numel() * dtype.itemsize
         )
 
-    @pytest.mark.parametrize("act_fn_cls", [nn.ReLU, nn.GELU, nn.Sigmoid, nn.Tanh, nn.SiLU])
+    @pytest.mark.parametrize("act_fn_cls", ACT_FNS)
     def test_mlp(self, act_fn_cls) -> None:
         """
         For the transformer MLP layer with a ReLU non-linearity, the initial inputs and the inputs
@@ -66,7 +85,7 @@ class TestSavedBwdCaptureContext:
         expected_mem = first_lin_input_mem + second_lin_input_mem + activation_input_mem
         assert saved.saved_tensor_mem == expected_mem
 
-    @pytest.mark.parametrize("act_fn_cls", [nn.ReLU, nn.GELU, nn.Sigmoid, nn.Tanh, nn.SiLU])
+    @pytest.mark.parametrize("act_fn_cls", ACT_FNS)
     def test_mlp_amp(self, act_fn_cls) -> None:
         """
         Similar story with AMP:
@@ -96,3 +115,23 @@ class TestSavedBwdCaptureContext:
             amp_weight_mem + first_lin_input_mem + second_lin_input_mem + activation_input_mem
         )
         assert saved.saved_tensor_mem == expected_mem
+
+
+class TestLayers:
+    def test_mlp(self) -> None:
+        mlp = layers.MLP(d_model=DIM)
+        inputs = torch.randn(BATCH_SIZE, SEQ_LEN, DIM)
+        outputs = mlp(inputs)
+        assert outputs.shape == inputs.shape
+
+    def test_attention(self) -> None:
+        attn = layers.Attention(d_model=DIM, n_heads=N_HEADS)
+        inputs = torch.randn(BATCH_SIZE, SEQ_LEN, DIM)
+        outputs = attn(inputs)
+        assert outputs.shape == inputs.shape
+
+    def test_block(self) -> None:
+        block = layers.Block(d_model=DIM, n_heads=N_HEADS)
+        inputs = torch.randn(BATCH_SIZE, SEQ_LEN, DIM)
+        outputs = block(inputs)
+        assert outputs.shape == inputs.shape

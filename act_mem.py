@@ -51,6 +51,7 @@ class AllocatedMemContext:
         """Gets the memory allocation stats and does some cleanup."""
         self.accel.synchronize()
         gc.collect()
+        torch.cuda.empty_cache()
         key_prefix = "allocated_bytes.all."
         return {
             k.replace(key_prefix, ""): v
