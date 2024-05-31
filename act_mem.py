@@ -41,6 +41,9 @@ class AllocatedMemContext:
     """
 
     def __init__(self) -> None:
+        # Ensure CUDA libraries are loaded:
+        torch.cuda.current_blas_handle()
+
         self.before: dict[str, int] = {}
         self.after: dict[str, int] = {}
         self.delta: dict[str, int] = {}
