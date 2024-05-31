@@ -60,7 +60,7 @@ class AllocatedMemContext:
         self.before = self._get_mem_dict()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(self, *args: Any, **kwargs: Any) -> None:
         self.after = self._get_mem_dict()
         self.delta = {k: v - self.before[k] for k, v in self.after.items()}
 
@@ -90,7 +90,8 @@ class SavedTensorContext:
         self,
         ignored_tensors: Optional[Iterable[torch.Tensor]] = None,
     ) -> None:
-        # Track ignored tensors by their storage's data_ptr.
+        # Track ignored tensors by their storage's data_ptr. Important to use storage's data_ptr,
+        # not just the data_ptr of the tensor itself.
         self._ignored_data_ptrs = (
             set() if ignored_tensors is None else {t.storage().data_ptr() for t in ignored_tensors}
         )
@@ -123,8 +124,6 @@ class SavedTensorContext:
         The memory in bytes of all saved tensors, accounting for views into the same storage.
         """
         accounted_for = self._ignored_data_ptrs.copy()
-        # Also add this data_ptr to the _ignored_data_ptrs set to avoid adding views tensors
-        # we have already accounted for
         total_bytes = 0
         for t in self.saved_tensor_dict:
             data_ptr = t.storage().data_ptr()
