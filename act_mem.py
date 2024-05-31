@@ -16,15 +16,6 @@ def get_tensor_bytes(tensor: torch.Tensor) -> int:
     return tensor_bytes
 
 
-def get_tensor_GiB(tensor: torch.Tensor) -> float:
-    """
-    Returns the GiB of storage a given tensor takes up. If `tensor` is a view of a larger tensor,
-    this function only returns the bytes associated with the view.
-    """
-    tensor_bytes = get_tensor_bytes(tensor)
-    return B_to_GiB(tensor_bytes)
-
-
 class AllocatedMemContext:
     """
     Context manager which captures the allocated GPU memory at context exit and the change between
