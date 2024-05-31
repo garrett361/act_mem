@@ -1,4 +1,3 @@
-import gc
 from typing import Any, Iterable, Optional, Union
 
 import torch
@@ -47,10 +46,6 @@ class AllocatedMemContext:
         self.delta: dict[str, int] = {}
 
     def _get_mem_dict(self) -> dict[str, int]:
-        # Gets the memory allocation stats and does some cleanup.
-        torch.cuda.synchronize()
-        gc.collect()
-        torch.cuda.empty_cache()
         key_prefix = "allocated_bytes.all."
         return {
             k.replace(key_prefix, ""): v
@@ -73,8 +68,9 @@ class SavedTensorContext:
     within the context window. Does not work with `meta`-device tensors.
 
     All saved tensors are stored in the `saved_tensor_dict` attr, which is an instance of torch's
-    WeakTensorKeyDictionary with tensor/data_ptr key/value pairs. The memory in bytes of all saved
-    tensors with unique storage can be accessed through `saved_tensor_mem`.
+    WeakTensorKeyDictionary with tensor/data_ptr key/value pairs. Some of these tensors may be
+    views of the same underlying storage. The total memory of all saved tensors in bytes, accounting
+    for redundant views, can be accessed through `saved_tensor_mem`.
 
     Use:
     ```
@@ -91,9 +87,9 @@ class SavedTensorContext:
         self,
         ignored_tensors: Optional[Iterable[torch.Tensor]] = None,
     ) -> None:
-        # Track ignored tensors by their data_ptr.
+        # Track ignored tensors by their storage's data_ptr.
         self._ignored_data_ptrs = (
-            set() if ignored_tensors is None else {t.data_ptr() for t in ignored_tensors}
+            set() if ignored_tensors is None else {t.storage().data_ptr() for t in ignored_tensors}
         )
 
         # Use WeakTensorKeyDictionary instances to save non-trivial tensor references, since these
@@ -101,12 +97,9 @@ class SavedTensorContext:
         self.saved_tensor_dict = torch.utils.weak.WeakTensorKeyDictionary()
 
         def pack_hook(saved_tensor: torch.Tensor) -> torch.Tensor:
-            data_ptr = saved_tensor.data_ptr()
+            data_ptr = saved_tensor.storage().data_ptr()
             if data_ptr not in self._ignored_data_ptrs:
                 self.saved_tensor_dict[saved_tensor] = data_ptr
-                # Also add this data_ptr to the _ignored_data_ptrs set to avoid adding views tensors
-                # we have already accounted for
-                self._ignored_data_ptrs.add(data_ptr)
             return saved_tensor
 
         def unpack_hook(saved_tensor: torch.Tensor) -> torch.Tensor:
@@ -123,5 +116,16 @@ class SavedTensorContext:
 
     @property
     def saved_tensor_mem(self) -> int:
-        total_bytes = sum(t.storage().nbytes() for t in self.saved_tensor_dict)
+        """
+        The memory in bytes of all saved tensors, accounting for views into the same storage.
+        """
+        accounted_for = self._ignored_data_ptrs.copy()
+        # Also add this data_ptr to the _ignored_data_ptrs set to avoid adding views tensors
+        # we have already accounted for
+        total_bytes = 0
+        for t in self.saved_tensor_dict:
+            data_ptr = t.storage().data_ptr()
+            if data_ptr not in accounted_for:
+                total_bytes += t.storage().nbytes()
+                accounted_for.add(data_ptr)
         return total_bytes
