@@ -84,7 +84,9 @@ class SavedTensorContext:
         # Track ignored tensors by their storage's data_ptr. Important to use storage's data_ptr,
         # not just the data_ptr of the tensor itself.
         self._ignored_data_ptrs = (
-            set() if ignored_tensors is None else {t.storage().data_ptr() for t in ignored_tensors}
+            set()
+            if ignored_tensors is None
+            else {t.untyped_storage().data_ptr() for t in ignored_tensors}
         )
 
         # Use WeakTensorKeyDictionary instances to save non-trivial tensor references, since these
@@ -92,7 +94,7 @@ class SavedTensorContext:
         self.saved_tensor_dict = torch.utils.weak.WeakTensorKeyDictionary()
 
         def pack_hook(saved_tensor: torch.Tensor) -> torch.Tensor:
-            data_ptr = saved_tensor.storage().data_ptr()
+            data_ptr = saved_tensor.untyped_storage().data_ptr()
             if data_ptr not in self._ignored_data_ptrs:
                 self.saved_tensor_dict[saved_tensor] = data_ptr
             return saved_tensor
@@ -117,8 +119,8 @@ class SavedTensorContext:
         accounted_for = self._ignored_data_ptrs.copy()
         total_bytes = 0
         for t in self.saved_tensor_dict:
-            data_ptr = t.storage().data_ptr()
+            data_ptr = t.untyped_storage().data_ptr()
             if data_ptr not in accounted_for:
-                total_bytes += t.storage().nbytes()
+                total_bytes += t.untyped_storage().nbytes()
                 accounted_for.add(data_ptr)
         return total_bytes
