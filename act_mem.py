@@ -67,7 +67,7 @@ class AllocatedMemContext:
         self.delta = {k: v - self.before[k] for k, v in self.after.items()}
 
 
-class SavedBwdCaptureContext:
+class SavedTensorContext:
     """
     Context manager which captures all tensors which are registered as being saved for backwards
     within the context window. Does not work with `meta`-device tensors.
@@ -79,7 +79,7 @@ class SavedBwdCaptureContext:
     Use:
     ```
     model = ...
-    with SavedBwdCaptureContext(ignored_tensors=model.parameters()) as saved:
+    with SavedTensorContext(ignored_tensors=model.parameters()) as saved:
         # Do some computation with `model` and capture saved tensors which are not model weights
 
     ```
@@ -93,9 +93,7 @@ class SavedBwdCaptureContext:
     ) -> None:
         # Track ignored tensors by their data_ptr.
         self._ignored_data_ptrs = (
-            set()
-            if ignored_tensors is None
-            else {t.untyped_storage().data_ptr() for t in ignored_tensors}
+            set() if ignored_tensors is None else {t.data_ptr() for t in ignored_tensors}
         )
 
         # Use WeakTensorKeyDictionary instances to save non-trivial tensor references, since these
@@ -103,7 +101,7 @@ class SavedBwdCaptureContext:
         self.saved_tensor_dict = torch.utils.weak.WeakTensorKeyDictionary()
 
         def pack_hook(saved_tensor: torch.Tensor) -> torch.Tensor:
-            data_ptr = saved_tensor.untyped_storage().data_ptr()
+            data_ptr = saved_tensor.data_ptr()
             if data_ptr not in self._ignored_data_ptrs:
                 self.saved_tensor_dict[saved_tensor] = data_ptr
                 # Also add this data_ptr to the _ignored_data_ptrs set to avoid adding views tensors
@@ -116,7 +114,7 @@ class SavedBwdCaptureContext:
 
         self._saved_tensors_hook = torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook)
 
-    def __enter__(self) -> "SavedBwdCaptureContext":
+    def __enter__(self) -> "SavedTensorContext":
         self._saved_tensors_hook.__enter__()
         return self
 
@@ -125,5 +123,5 @@ class SavedBwdCaptureContext:
 
     @property
     def saved_tensor_mem(self) -> int:
-        total_bytes = sum(t.untyped_storage().nbytes() for t in self.saved_tensor_dict)
+        total_bytes = sum(t.storage().nbytes() for t in self.saved_tensor_dict)
         return total_bytes
