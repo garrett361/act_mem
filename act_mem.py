@@ -39,12 +39,13 @@ class AllocatedMemContext:
         self.after: dict[str, int] = {}
         self.delta: dict[str, int] = {}
 
+        self._mem_key_prefix = "allocated_bytes.all."
+
     def _get_mem_dict(self) -> dict[str, int]:
-        key_prefix = "allocated_bytes.all."
         return {
-            k.replace(key_prefix, ""): v
+            k.replace(self._mem_key_prefix, ""): v
             for k, v in torch.cuda.memory_stats().items()
-            if key_prefix in k
+            if self._mem_key_prefix in k
         }
 
     def __enter__(self) -> "AllocatedMemContext":

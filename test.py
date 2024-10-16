@@ -23,7 +23,7 @@ if torch.cuda.is_available():
     torch.empty(1, 1, device="cuda") @ torch.empty(1, 1, device="cuda")
 
 
-ZERO_MEM_ACT_FNS = [nn.ReLU(), nn.Sigmoid(), nn.Tanh(), nn.LeakyReLU(inplace=True)]
+ZERO_MEM_ACT_FNS = [nn.ReLU(), nn.Sigmoid(), nn.Tanh(), nn.LeakyReLU(inplace=True), nn.Sigmoid()]
 ALL_ACT_FNS = ZERO_MEM_ACT_FNS + [
     nn.ELU(),
     nn.GELU(),
@@ -163,13 +163,14 @@ class TestCUDAMemReadings:
     @pytest.mark.parametrize("d_model", D_MODELS)
     @pytest.mark.parametrize("batch_size", BATCH_SIZES)
     @pytest.mark.parametrize("seq_len", SEQ_LENS)
-    def test_mlp(self, d_model: int, batch_size: int, seq_len: int):
+    @pytest.mark.parametrize("act_fn", ALL_ACT_FNS)
+    def test_mlp(self, d_model: int, batch_size: int, seq_len: int, act_fn: nn.Module) -> None:
         """
         Track saved tensors and allocated memory and verify they agree.
         """
 
         inputs = torch.randn(batch_size, seq_len, d_model, device="cuda")
-        mlp = layers.MLP(d_model=d_model, act_fn=nn.ReLU(), device="cuda")
+        mlp = layers.MLP(d_model=d_model, act_fn=act_fn, device="cuda")
 
         with act_mem.AllocatedMemContext() as mem, act_mem.SavedTensorContext(
             ignored_tensors=mlp.parameters()
@@ -182,6 +183,7 @@ class TestCUDAMemReadings:
         assert mem.delta["current"] == saved.saved_tensor_mem
 
 
+# TODO: @garrett.goon - Delete these
 class TestLayers:
     @pytest.mark.parametrize("device", DEVICES)
     @pytest.mark.parametrize("d_model", D_MODELS)
